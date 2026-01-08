@@ -5,14 +5,19 @@ const mongoose = require('mongoose');
 const BOT_TOKEN = '8595951105:AAEgCbk2ZqJRtrOJ1-gpZNTEwTphmx_wUws';
 const MONGODB_URL = 'mongodb+srv://abumafia0:abumafia0@abumafia.h1trttg.mongodb.net/kino1bot?appName=abumafia';
 
-// Bir nechta admin qo'llab-quvvatlash (istalganicha qo'shishingiz mumkin)
-const ADMIN_IDS = [6606638731, 6355141067, 7962180552]; // Bu yerga admin ID larni qo'shing (number sifatida!)
+// Bir nechta admin
+const ADMIN_IDS = [6606638731, 6355141067, 7962180552]; // Raqamlar bilan!
+
+// Render.com muhit o'zgaruvchilari
+const PORT = process.env.PORT || 3000;
+const URL = process.env.RENDER_EXTERNAL_URL || process.env.URL; // Render avto beradi
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'super_secret_token_123'; // Ixtiyoriy himoya
 
 mongoose.connect(MONGODB_URL)
     .then(() => console.log('MongoDB ulandi'))
     .catch(err => console.error('MongoDB xatosi:', err));
 
-// Schemalar
+// Schemalar (oldingi kabi)
 const userSchema = new mongoose.Schema({
     user_id: { type: Number, required: true, unique: true },
     username: String,
@@ -45,14 +50,14 @@ function ensureSession(ctx) {
     if (!ctx.session) ctx.session = {};
 }
 
-// Foydalanuvchi adminligini tekshirish
+// Admin tekshirish
 function isAdmin(userId) {
     return ADMIN_IDS.includes(userId);
 }
 
-// Barcha majburiy obunalarni tekshirish (faqat oddiy userlar uchun)
+// Obuna tekshirish
 async function checkAllSubscriptions(userId) {
-    if (isAdmin(userId)) return true; // Adminlar uchun obuna shart emas
+    if (isAdmin(userId)) return true;
 
     try {
         const subs = await Subscription.find({});
@@ -66,18 +71,18 @@ async function checkAllSubscriptions(userId) {
                     return false;
                 }
             } catch (error) {
-                console.error(`Obuna tekshirish xatosi (${sub.chat_username}):`, error.message);
+                console.error(`Obuna xatosi (${sub.chat_username}):`, error.message);
                 return false;
             }
         }
         return true;
     } catch (error) {
-        console.error('Obunalar tekshirish xatosi:', error);
+        console.error('Obunalar xatosi:', error);
         return false;
     }
 }
 
-// Obuna tugmalari
+// Obuna klaviaturasi
 async function getSubscriptionKeyboard() {
     const subs = await Subscription.find({});
     const rows = subs.map(sub =>
@@ -106,20 +111,17 @@ async function addUser(ctx) {
     }
 }
 
-// START
+// Barcha handlerlar (oldingi kod bilan bir xil)
 bot.start(async (ctx) => {
     await addUser(ctx);
-
     const userId = ctx.from.id;
     const isSubscribed = await checkAllSubscriptions(userId);
 
-    // Agar admin bo'lmasa va obuna bo'lmagan bo'lsa
     if (!isSubscribed && !isAdmin(userId)) {
         const keyboard = await getSubscriptionKeyboard();
         return ctx.reply('Botdan foydalanish uchun quyidagi kanal va guruhlarga obuna boʻling:', keyboard);
     }
 
-    // Admin bo'lsa — panel
     if (isAdmin(userId)) {
         const adminKeyboard = Markup.keyboard([
             ['🎬 Kino qoʻshish', '📊 Statistika'],
@@ -130,11 +132,9 @@ bot.start(async (ctx) => {
         return ctx.reply('👨‍💻 Admin panelga xush kelibsiz!', adminKeyboard);
     }
 
-    // Oddiy user — obuna bo'lgan
     ctx.reply('🎥 Botga xush kelibsiz!\nKino olish uchun kod yuboring (masalan: 7)');
 });
 
-// Obuna tekshirish tugmasi
 bot.action('check_subscription', async (ctx) => {
     await ctx.answerCbQuery();
     const userId = ctx.from.id;
@@ -158,7 +158,7 @@ bot.action('check_subscription', async (ctx) => {
     ctx.reply('Hali barcha kanal va guruhlarga obuna boʻlmagansiz:', keyboard);
 });
 
-// ADMIN TUGMALARI (faqat adminlar uchun)
+// Barcha admin tugmalari va handlerlar (oldingi kod bilan bir xil)
 bot.hears('🎬 Kino qoʻshish', (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
     ensureSession(ctx);
@@ -214,7 +214,6 @@ bot.hears('➖ Oʻchirish', (ctx) => {
     ctx.reply('Oʻchirish uchun kanal yoki guruh username ni yuboring (masalan: @hallaym):');
 });
 
-// VIDEO forward qabul qilish
 bot.on('video', async (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
     ensureSession(ctx);
@@ -232,13 +231,11 @@ bot.on('video', async (ctx) => {
     ctx.reply('✅ Video qabul qilindi!\nEndi kino kodi yuboring (masalan: 7):');
 });
 
-// TEXT xabarlar
 bot.on('text', async (ctx) => {
     ensureSession(ctx);
     const text = ctx.message.text.trim();
     const userId = ctx.from.id;
 
-    // ADMIN: Kanal qo'shish
     if (isAdmin(userId) && ctx.session.awaitingChannel) {
         if (!text.startsWith('@')) return ctx.reply('Username @ bilan boshlanishi kerak.');
         try {
@@ -251,7 +248,6 @@ bot.on('text', async (ctx) => {
         }
     }
 
-    // ADMIN: Guruh qo'shish
     if (isAdmin(userId) && ctx.session.awaitingGroup) {
         if (!text.startsWith('@')) return ctx.reply('Username @ bilan boshlanishi kerak.');
         try {
@@ -264,7 +260,6 @@ bot.on('text', async (ctx) => {
         }
     }
 
-    // ADMIN: O'chirish
     if (isAdmin(userId) && ctx.session.deletingSub) {
         const result = await Subscription.deleteOne({ chat_username: text });
         delete ctx.session.deletingSub;
@@ -275,7 +270,6 @@ bot.on('text', async (ctx) => {
         }
     }
 
-    // ADMIN: Kino kodini kiritish
     if (isAdmin(userId) && ctx.session.waitingForCode && ctx.session.movieData) {
         const code = text;
         try {
@@ -298,7 +292,6 @@ bot.on('text', async (ctx) => {
         }
     }
 
-    // ADMIN: Broadcast
     if (isAdmin(userId) && ctx.session.broadcasting) {
         try {
             const users = await User.find({});
@@ -307,7 +300,7 @@ bot.on('text', async (ctx) => {
                 try {
                     await ctx.telegram.copyMessage(user.user_id, ctx.chat.id, ctx.message.message_id);
                     success++;
-                } catch (e) { /* blocked */ }
+                } catch (e) { }
             }
             ctx.session.broadcasting = false;
             return ctx.reply(`✅ Broadcast ${success} ta foydalanuvchiga yuborildi.`);
@@ -317,7 +310,6 @@ bot.on('text', async (ctx) => {
         }
     }
 
-    // ODDIY USER: Kino kodini kiritishi
     const isSubscribed = await checkAllSubscriptions(userId);
     if (!isSubscribed) {
         const keyboard = await getSubscriptionKeyboard();
@@ -335,7 +327,6 @@ bot.on('text', async (ctx) => {
     });
 });
 
-// Broadcast uchun boshqa kontentlar
 bot.on(['photo', 'document', 'audio', 'voice', 'animation'], async (ctx) => {
     ensureSession(ctx);
     if (!isAdmin(ctx.from.id) || !ctx.session.broadcasting) return;
@@ -347,7 +338,7 @@ bot.on(['photo', 'document', 'audio', 'voice', 'animation'], async (ctx) => {
             try {
                 await ctx.telegram.copyMessage(user.user_id, ctx.chat.id, ctx.message.message_id);
                 success++;
-            } catch (e) { /* blocked */ }
+            } catch (e) { }
         }
         ctx.session.broadcasting = false;
         ctx.reply(`✅ Broadcast ${success} ta foydalanuvchiga yuborildi.`);
@@ -357,10 +348,43 @@ bot.on(['photo', 'document', 'audio', 'voice', 'animation'], async (ctx) => {
     }
 });
 
-// Botni ishga tushirish
-bot.launch()
-    .then(() => console.log('Bot muvaffaqiyatli ishga tushdi 🚀'))
-    .catch(err => console.error('Ishga tushirishda xatolik:', err));
+// === WEBHOOK SOZLASH ===
+if (URL) {
+    // Render.com da webhook ornatish
+    const webhookPath = `/telegraf/${bot.secretPathComponent()}`;
+    const fullUrl = `${URL}${webhookPath}`;
 
+    bot.telegram.setWebhook(fullUrl, {
+        secret_token: WEBHOOK_SECRET
+    }).then(() => {
+        console.log(`Webhook o'rnatildi: ${fullUrl}`);
+    }).catch(err => {
+        console.error('Webhook o\'rnatishda xato:', err.message);
+    });
+
+    // Express server yaratish (Render uchun majburiy)
+    const express = require('express');
+    const app = express();
+    app.use(express.json());
+
+    app.use(bot.webhookCallback(webhookPath));
+
+    // Asosiy sahifa (Render so'raganda javob berish uchun)
+    app.get('/', (req, res) => {
+        res.send('Bot ishlamoqda! 🚀');
+    });
+
+    app.listen(PORT, () => {
+        console.log(`Server ${PORT} portda ishga tushdi`);
+        console.log(`Webhook URL: ${fullUrl}`);
+    });
+} else {
+    // Local test uchun polling
+    bot.launch()
+        .then(() => console.log('Bot polling rejimida ishga tushdi (local)'))
+        .catch(err => console.error('Xatolik:', err));
+}
+
+// Graceful stop
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
