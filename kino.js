@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 
 // SOZLAMALAR
 const BOT_TOKEN = '8595951105:AAEgCbk2ZqJRtrOJ1-gpZNTEwTphmx_wUws';
-const MONGODB_URL = 'mongodb+srv://abumafia0:abumafia0@abumafia.h1trttg.mongodb.net/kino17bot?appName=abumafia';
+const MONGODB_URL = 'mongodb+srv://abumafia0:abumafia0@abumafia.h1trttg.mongodb.net/kino1bot?appName=abumafia';
 
 // Bir nechta admin
 const ADMIN_IDS = [6606638731, 6355141067, 7962180552, 6671258886]; // Raqamlar bilan!
@@ -33,8 +33,11 @@ const movieSchema = new mongoose.Schema({
 });
 
 const subscriptionSchema = new mongoose.Schema({
-    chat_username: { type: String, required: true, unique: true },
-    type: { type: String, enum: ['channel', 'group'], required: true }
+    chat_username: { type: String, required: true },
+    chat_id: { type: String, unique: true },
+    type: { type: String, enum: ['channel', 'group'], required: true },
+    is_private: { type: Boolean, default: false },
+    invite_link: String
 });
 
 const User = mongoose.model('User', userSchema);
@@ -55,7 +58,48 @@ function isAdmin(userId) {
     return ADMIN_IDS.includes(userId);
 }
 
-// Obuna tekshirish
+// Kanal linkini parse qilish
+function parseChatLink(input) {
+    const text = input.trim();
+    
+    // @username format
+    if (text.startsWith('@')) {
+        return {
+            type: text.includes('channel') || text.includes('Group') ? 'channel' : 'unknown',
+            identifier: text,
+            isPrivate: false,
+            inviteHash: null
+        };
+    }
+    
+    // https://t.me/username format
+    if (text.includes('https://t.me/')) {
+        const match = text.match(/https:\/\/t\.me\/(.+)/);
+        if (match) {
+            const identifier = match[1];
+            return {
+                type: identifier.startsWith('+') ? 'private' : 'public',
+                identifier: identifier.startsWith('+') ? identifier : `@${identifier}`,
+                isPrivate: identifier.startsWith('+'),
+                inviteHash: identifier.startsWith('+') ? identifier.slice(1) : null
+            };
+        }
+    }
+    
+    // +dR2CFxyLVS4zNGVI format
+    if (text.startsWith('+')) {
+        return {
+            type: 'private',
+            identifier: text,
+            isPrivate: true,
+            inviteHash: text.slice(1)
+        };
+    }
+    
+    return null;
+}
+
+// Obuna tekshirish (faqat public kanal/guruhlar uchun)
 async function checkAllSubscriptions(userId) {
     if (isAdmin(userId)) return true;
 
@@ -64,6 +108,9 @@ async function checkAllSubscriptions(userId) {
         if (subs.length === 0) return true;
 
         for (const sub of subs) {
+            // Maxfiy kanal/guruhlar uchun tekshirishni o'tkazib yuboramiz
+            if (sub.is_private) continue;
+            
             try {
                 const member = await bot.telegram.getChatMember(sub.chat_username, userId);
                 const status = member.status;
@@ -85,12 +132,26 @@ async function checkAllSubscriptions(userId) {
 // Obuna klaviaturasi
 async function getSubscriptionKeyboard() {
     const subs = await Subscription.find({});
-    const rows = subs.map(sub =>
-        [Markup.button.url(
-            sub.type === 'channel' ? '📢 Kanal' : '👥 Guruh',
-            `https://t.me/${sub.chat_username.replace('@', '')}`
-        )]
-    );
+    const rows = [];
+    
+    for (const sub of subs) {
+        let buttonText = '';
+        let url = '';
+        
+        if (sub.is_private) {
+            // Maxfiy kanal uchun
+            buttonText = sub.type === 'channel' ? '🔒 Maxfiy Kanal' : '🔒 Maxfiy Guruh';
+            url = sub.invite_link || `https://t.me/${sub.chat_username}`;
+        } else {
+            // Ochiq kanal uchun
+            buttonText = sub.type === 'channel' ? '📢 Kanal' : '👥 Guruh';
+            const username = sub.chat_username.replace('@', '');
+            url = `https://t.me/${username}`;
+        }
+        
+        rows.push([Markup.button.url(buttonText, url)]);
+    }
+    
     rows.push([Markup.button.callback('✅ Tekshirish', 'check_subscription')]);
     return Markup.inlineKeyboard(rows);
 }
@@ -108,6 +169,64 @@ async function addUser(ctx) {
         }
     } catch (error) {
         console.error('User qo\'shish xatosi:', error);
+    }
+}
+
+// Maxfiy kanalni tekshirish va saqlash
+async function addPrivateSubscription(chatLink, type) {
+    try {
+        // Linkni tahlil qilish
+        const parsed = parseChatLink(chatLink);
+        if (!parsed) return { success: false, message: 'Noto\'g\'ri link format' };
+        
+        // Ma'lumotlarni tayyorlash
+        const subscriptionData = {
+            chat_username: parsed.identifier,
+            type: type,
+            is_private: true,
+            invite_link: chatLink.startsWith('http') ? chatLink : `https://t.me/${parsed.identifier}`
+        };
+        
+        // Bazaga saqlash
+        await Subscription.create(subscriptionData);
+        return { success: true, message: `✅ ${type === 'channel' ? 'Maxfiy kanal' : 'Maxfiy guruh'} qoʻshildi!` };
+        
+    } catch (err) {
+        if (err.code === 11000) return { success: false, message: 'Bu kanal allaqachon qoʻshilgan.' };
+        return { success: false, message: 'Xatolik yuz berdi.' };
+    }
+}
+
+// Public kanalni tekshirish va saqlash
+async function addPublicSubscription(chatLink, type) {
+    try {
+        const chatId = chatLink.startsWith('@') ? chatLink : `@${chatLink}`;
+        
+        // Bot kanalda adminligini tekshirish
+        try {
+            await bot.telegram.getChat(chatId);
+            const admins = await bot.telegram.getChatAdministrators(chatId);
+            const isBotAdmin = admins.some(admin => admin.user.id === bot.botInfo.id);
+            
+            if (!isBotAdmin) {
+                return { success: false, message: 'Bot kanalda admin emas. Botni kanalga admin qiling va qayta urinib ko\'ring.' };
+            }
+        } catch (error) {
+            return { success: false, message: 'Kanal topilmadi yoki bot kanalda admin emas.' };
+        }
+        
+        // Bazaga saqlash
+        await Subscription.create({
+            chat_username: chatId,
+            type: type,
+            is_private: false
+        });
+        
+        return { success: true, message: `✅ ${type === 'channel' ? 'Kanal' : 'Guruh'} qoʻshildi!` };
+        
+    } catch (err) {
+        if (err.code === 11000) return { success: false, message: 'Bu kanal allaqachon qoʻshilgan.' };
+        return { success: false, message: 'Xatolik yuz berdi.' };
     }
 }
 
@@ -172,7 +291,9 @@ bot.hears('📊 Statistika', async (ctx) => {
         const users = await User.countDocuments();
         const movies = await Movie.countDocuments();
         const subs = await Subscription.countDocuments();
-        ctx.reply(`📊 Statistika:\n\n👥 Foydalanuvchilar: ${users}\n🎬 Kinolar: ${movies}\n📢 Majburiy obunalar: ${subs}`);
+        const publicSubs = await Subscription.countDocuments({ is_private: false });
+        const privateSubs = await Subscription.countDocuments({ is_private: true });
+        ctx.reply(`📊 Statistika:\n\n👥 Foydalanuvchilar: ${users}\n🎬 Kinolar: ${movies}\n📢 Majburiy obunalar: ${subs}\n   └ Ochiq: ${publicSubs}\n   └ Maxfiy: ${privateSubs}`);
     } catch (err) {
         ctx.reply('Statistika olishda xatolik');
     }
@@ -189,21 +310,27 @@ bot.hears('➕ Kanal qoʻshish', (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
     ensureSession(ctx);
     ctx.session.awaitingChannel = true;
-    ctx.reply('Yangi kanal username ni yuboring (masalan: @hallaym):');
+    ctx.reply('Yangi kanal linkini yuboring:\n\n' +
+             '- Public kanal: @kanal_username yoki https://t.me/kanal_username\n' +
+             '- Private kanal: https://t.me/+dR2CFxyLVS4zNGVI yoki +dR2CFxyLVS4zNGVI');
 });
 
 bot.hears('➕ Guruh qoʻshish', (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
     ensureSession(ctx);
     ctx.session.awaitingGroup = true;
-    ctx.reply('Yangi guruh username ni yuboring (masalan: @talabagacha):');
+    ctx.reply('Yangi guruh linkini yuboring:\n\n' +
+             '- Public guruh: @guruh_username yoki https://t.me/guruh_username\n' +
+             '- Private guruh: https://t.me/+dR2CFxyLVS4zNGVI yoki +dR2CFxyLVS4zNGVI');
 });
 
 bot.hears('📋 Roʻyxatni koʻrish', async (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
     const subs = await Subscription.find({});
     if (subs.length === 0) return ctx.reply('Hozircha majburiy obuna yoʻq.');
-    const list = subs.map((s, i) => `${i+1}. ${s.type === 'channel' ? '📢' : '👥'} ${s.chat_username}`).join('\n');
+    const list = subs.map((s, i) => 
+        `${i+1}. ${s.type === 'channel' ? '📢' : '👥'} ${s.chat_username} ${s.is_private ? '🔒' : '🌐'}`
+    ).join('\n');
     ctx.reply(`📋 Majburiy obunalar:\n\n${list}`);
 });
 
@@ -211,18 +338,15 @@ bot.hears('➖ Oʻchirish', (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
     ensureSession(ctx);
     ctx.session.deletingSub = true;
-    ctx.reply('Oʻchirish uchun kanal yoki guruh username ni yuboring (masalan: @hallaym):');
+    ctx.reply('Oʻchirish uchun kanal yoki guruh username/linkini yuboring:');
 });
 
-// VIDEO QABUL QILISH - TO'G'RILANGAN VERSIYA
+// VIDEO QABUL QILISH
 bot.on('video', async (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
     ensureSession(ctx);
     if (!ctx.session.addingMovie) return;
 
-    // Faqat forward qilingan videolarni tekshirish shartini O'CHIRAMIZ
-    // Har qanday videoni qabul qilish uchun
-    
     ctx.session.movieData = {
         file_id: ctx.message.video.file_id,
         caption: ctx.message.caption || ''
@@ -236,38 +360,69 @@ bot.on('text', async (ctx) => {
     const text = ctx.message.text.trim();
     const userId = ctx.from.id;
 
-    // Admin funksiyalari
+    // Kanal qo'shish
     if (isAdmin(userId) && ctx.session.awaitingChannel) {
-        if (!text.startsWith('@')) return ctx.reply('Username @ bilan boshlanishi kerak.');
-        try {
-            await Subscription.create({ chat_username: text, type: 'channel' });
-            delete ctx.session.awaitingChannel;
-            return ctx.reply(`✅ ${text} kanali qoʻshildi.`);
-        } catch (err) {
-            if (err.code === 11000) return ctx.reply('Bu kanal allaqachon mavjud.');
-            return ctx.reply('Xatolik yuz berdi.');
+        const parsed = parseChatLink(text);
+        
+        if (!parsed) {
+            return ctx.reply('❌ Noto\'g\'ri format. Iltimos, quyidagi formatlardan birini kiriting:\n' +
+                           '- @kanal_username\n' +
+                           '- https://t.me/kanal_username\n' +
+                           '- https://t.me/+invitehash\n' +
+                           '- +invitehash');
+        }
+        
+        delete ctx.session.awaitingChannel;
+        
+        if (parsed.isPrivate) {
+            // Maxfiy kanal
+            const result = await addPrivateSubscription(text, 'channel');
+            return ctx.reply(result.message);
+        } else {
+            // Ochiq kanal
+            const result = await addPublicSubscription(text, 'channel');
+            return ctx.reply(result.message);
         }
     }
 
+    // Guruh qo'shish
     if (isAdmin(userId) && ctx.session.awaitingGroup) {
-        if (!text.startsWith('@')) return ctx.reply('Username @ bilan boshlanishi kerak.');
-        try {
-            await Subscription.create({ chat_username: text, type: 'group' });
-            delete ctx.session.awaitingGroup;
-            return ctx.reply(`✅ ${text} guruhi qoʻshildi.`);
-        } catch (err) {
-            if (err.code === 11000) return ctx.reply('Bu guruh allaqachon mavjud.');
-            return ctx.reply('Xatolik yuz berdi.');
+        const parsed = parseChatLink(text);
+        
+        if (!parsed) {
+            return ctx.reply('❌ Noto\'g\'ri format. Iltimos, quyidagi formatlardan birini kiriting:\n' +
+                           '- @guruh_username\n' +
+                           '- https://t.me/guruh_username\n' +
+                           '- https://t.me/+invitehash\n' +
+                           '- +invitehash');
+        }
+        
+        delete ctx.session.awaitingGroup;
+        
+        if (parsed.isPrivate) {
+            // Maxfiy guruh
+            const result = await addPrivateSubscription(text, 'group');
+            return ctx.reply(result.message);
+        } else {
+            // Ochiq guruh
+            const result = await addPublicSubscription(text, 'group');
+            return ctx.reply(result.message);
         }
     }
 
+    // O'chirish
     if (isAdmin(userId) && ctx.session.deletingSub) {
-        const result = await Subscription.deleteOne({ chat_username: text });
+        const result = await Subscription.deleteOne({ 
+            $or: [
+                { chat_username: text },
+                { invite_link: text }
+            ]
+        });
         delete ctx.session.deletingSub;
         if (result.deletedCount > 0) {
-            return ctx.reply(`✅ ${text} oʻchirildi.`);
+            return ctx.reply(`✅ Oʻchirildi.`);
         } else {
-            return ctx.reply('Bunday obuna topilmadi.');
+            return ctx.reply('❌ Bunday obuna topilmadi.');
         }
     }
 
