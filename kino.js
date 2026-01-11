@@ -17,7 +17,7 @@ mongoose.connect(MONGODB_URL)
     .then(() => console.log('MongoDB ulandi'))
     .catch(err => console.error('MongoDB xatosi:', err));
 
-// Schemalar (oldingi kabi)
+// Schemalar
 const userSchema = new mongoose.Schema({
     user_id: { type: Number, required: true, unique: true },
     username: String,
@@ -111,7 +111,7 @@ async function addUser(ctx) {
     }
 }
 
-// Barcha handlerlar (oldingi kod bilan bir xil)
+// Barcha handlerlar
 bot.start(async (ctx) => {
     await addUser(ctx);
     const userId = ctx.from.id;
@@ -158,12 +158,12 @@ bot.action('check_subscription', async (ctx) => {
     ctx.reply('Hali barcha kanal va guruhlarga obuna boʻlmagansiz:', keyboard);
 });
 
-// Barcha admin tugmalari va handlerlar (oldingi kod bilan bir xil)
+// Barcha admin tugmalari va handlerlar
 bot.hears('🎬 Kino qoʻshish', (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
     ensureSession(ctx);
     ctx.session.addingMovie = true;
-    ctx.reply('🎬 Kino qoʻshish rejimi yoqildi!\nBoshqa chatdan video + izoh bilan postni forward qiling.');
+    ctx.reply('🎬 Kino qoʻshish rejimi yoqildi!\nHar qanday chatdan (shaxsiy, guruh, kanal) video yuboring yoki forward qiling!');
 });
 
 bot.hears('📊 Statistika', async (ctx) => {
@@ -214,15 +214,15 @@ bot.hears('➖ Oʻchirish', (ctx) => {
     ctx.reply('Oʻchirish uchun kanal yoki guruh username ni yuboring (masalan: @hallaym):');
 });
 
+// VIDEO QABUL QILISH - TO'G'RILANGAN VERSIYA
 bot.on('video', async (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
     ensureSession(ctx);
     if (!ctx.session.addingMovie) return;
 
-    if (!ctx.message.forward_from_message_id) {
-        return ctx.reply('❌ Faqat forward qilingan video qabul qilinadi!');
-    }
-
+    // Faqat forward qilingan videolarni tekshirish shartini O'CHIRAMIZ
+    // Har qanday videoni qabul qilish uchun
+    
     ctx.session.movieData = {
         file_id: ctx.message.video.file_id,
         caption: ctx.message.caption || ''
@@ -236,6 +236,7 @@ bot.on('text', async (ctx) => {
     const text = ctx.message.text.trim();
     const userId = ctx.from.id;
 
+    // Admin funksiyalari
     if (isAdmin(userId) && ctx.session.awaitingChannel) {
         if (!text.startsWith('@')) return ctx.reply('Username @ bilan boshlanishi kerak.');
         try {
@@ -270,6 +271,7 @@ bot.on('text', async (ctx) => {
         }
     }
 
+    // Kino kodini qabul qilish
     if (isAdmin(userId) && ctx.session.waitingForCode && ctx.session.movieData) {
         const code = text;
         try {
@@ -292,6 +294,7 @@ bot.on('text', async (ctx) => {
         }
     }
 
+    // Broadcast
     if (isAdmin(userId) && ctx.session.broadcasting) {
         try {
             const users = await User.find({});
@@ -310,6 +313,7 @@ bot.on('text', async (ctx) => {
         }
     }
 
+    // Oddiy foydalanuvchi uchun kino qidirish
     const isSubscribed = await checkAllSubscriptions(userId);
     if (!isSubscribed) {
         const keyboard = await getSubscriptionKeyboard();
@@ -327,6 +331,7 @@ bot.on('text', async (ctx) => {
     });
 });
 
+// Boshqa turdagi kontentlar bilan broadcast
 bot.on(['photo', 'document', 'audio', 'voice', 'animation'], async (ctx) => {
     ensureSession(ctx);
     if (!isAdmin(ctx.from.id) || !ctx.session.broadcasting) return;
