@@ -6,7 +6,7 @@ const BOT_TOKEN = '8595951105:AAEgCbk2ZqJRtrOJ1-gpZNTEwTphmx_wUws';
 const MONGODB_URL = 'mongodb+srv://abumafia0:abumafia0@abumafia.h1trttg.mongodb.net/kino1bot?appName=abumafia';
 
 // Bir nechta admin
-const ADMIN_IDS = [6606638731, 6355141067, 7962180552]; // Raqamlar bilan!
+const ADMIN_IDS = [6606638731, 6355141067, 7962180552, 6671258886]; // Raqamlar bilan!
 
 // Render.com muhit o'zgaruvchilari
 const PORT = process.env.PORT || 3000;
