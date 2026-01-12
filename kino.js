@@ -4,7 +4,7 @@ const express = require('express');
 
 // SOZLAMALAR
 const BOT_TOKEN = '8595951105:AAEgCbk2ZqJRtrOJ1-gpZNTEwTphmx_wUws';
-const MONGODB_URL = 'mongodb+srv://abumafia0:abumafia0@abumafia.h1trttg.mongodb.net/kinojanbot?appName=abumafia';
+const MONGODB_URL = 'mongodb+srv://abumafia0:abumafia0@abumafia.h1trttg.mongodb.net/kino17?appName=abumafia';
 
 // Adminlar ro'yxati
 const ADMIN_IDS = [6606638731, 901126203];
