@@ -2,7 +2,7 @@ const { Telegraf, Markup, session } = require('telegraf');
 const mongoose = require('mongoose');
 
 // SOZLAMALAR
-const BOT_TOKEN = '8504888393:AAHUV2fMIjvo00feV_tJhKtHdwhnX_eJNm8';
+const BOT_TOKEN = '8595951105:AAEgCbk2ZqJRtrOJ1-gpZNTEwTphmx_wUws';
 const MONGODB_URL = 'mongodb+srv://abumafia0:abumafia0@abumafia.h1trttg.mongodb.net/kinojanbot?appName=abumafia';
 
 // Bir nechta admin
