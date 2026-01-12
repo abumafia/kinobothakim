@@ -33,9 +33,10 @@ const movieSchema = new mongoose.Schema({
     date: { type: Date, default: Date.now }
 });
 
+// subscriptionSchema ni o'zgartirish: chat_id unique emas
 const subscriptionSchema = new mongoose.Schema({
     chat_username: { type: String, required: true, unique: true },
-    chat_id: { type: String, unique: true },
+    chat_id: { type: String },  // unique emas, shuning uchun null qiymatlar takrorlanishi mumkin
     type: { type: String, enum: ['channel', 'group'], required: true },
     is_private: { type: Boolean, default: false },
     invite_link: String,
@@ -193,38 +194,32 @@ async function addSubscription(chatLink, type) {
             return { success: false, message: '❌ Noto\'g\'ri link format' };
         }
 
-        // Bazada mavjudligini tekshirish
+        // Bazada mavjudligini tekshirish (chat_username bo'yicha)
         const existing = await Subscription.findOne({ 
-            $or: [
-                { chat_username: parsed.identifier },
-                { invite_link: chatLink }
-            ]
+            chat_username: parsed.identifier
         });
         
         if (existing) {
             return { success: false, message: '❌ Bu kanal/guruh allaqachon qoʻshilgan.' };
         }
 
+        let subscriptionData = {
+            chat_username: parsed.identifier,
+            type: type,
+            is_private: parsed.isPrivate,
+            invite_link: null
+        };
+
         if (parsed.isPrivate) {
-            // Maxfiy kanal/guruh
-            const subscriptionData = {
-                chat_username: parsed.identifier,
-                type: type,
-                is_private: true,
-                invite_link: chatLink.startsWith('http') ? chatLink : `https://t.me/${parsed.inviteHash}`
-            };
-            
-            await Subscription.create(subscriptionData);
-            return { 
-                success: true, 
-                message: `✅ ${type === 'channel' ? 'Maxfiy kanal' : 'Maxfiy guruh'} muvaffaqiyatli qoʻshildi!` 
-            };
+            // Maxfiy kanal/guruh uchun chat_id ni inviteHash yordamida yaratamiz
+            subscriptionData.chat_id = `private_${parsed.inviteHash || parsed.identifier.replace('@', '')}`;
+            subscriptionData.invite_link = chatLink.startsWith('http') ? chatLink : `https://t.me/${parsed.inviteHash}`;
         } else {
-            // Ochiq kanal/guruh
+            // Ochiq kanal/guruh uchun chat_id ni chat_username bilan bir xil qilamiz (yoki null qoldiramiz)
+            subscriptionData.chat_id = parsed.identifier;  // yoki null
+            // Bot adminligini tekshirish
             const chatId = parsed.identifier.replace('@', '');
-            
             try {
-                // Bot adminligini tekshirish
                 const chat = await bot.telegram.getChat(`@${chatId}`);
                 
                 if (chat.type !== 'channel' && chat.type !== 'supergroup') {
@@ -237,17 +232,6 @@ async function addSubscription(chatLink, type) {
                 if (!isBotAdmin) {
                     return { success: false, message: '❌ Bot kanalda admin emas. Botni kanalga admin qiling va qayta urinib ko\'ring.' };
                 }
-                
-                await Subscription.create({
-                    chat_username: parsed.identifier,
-                    type: type,
-                    is_private: false
-                });
-                
-                return { 
-                    success: true, 
-                    message: `✅ ${type === 'channel' ? 'Kanal' : 'Guruh'} muvaffaqiyatli qoʻshildi!` 
-                };
             } catch (error) {
                 if (error.description === 'Bad Request: chat not found') {
                     return { success: false, message: '❌ Kanal topilmadi. Username ni tekshiring yoki kanal ochiqligiga ishonch hosil qiling.' };
@@ -255,6 +239,13 @@ async function addSubscription(chatLink, type) {
                 return { success: false, message: `❌ Xatolik: ${error.message}` };
             }
         }
+        
+        await Subscription.create(subscriptionData);
+        return { 
+            success: true, 
+            message: `✅ ${type === 'channel' ? 'Kanal' : 'Guruh'} muvaffaqiyatli qoʻshildi!` 
+        };
+        
     } catch (err) {
         console.error('❌ Kanal qo\'shish xatosi:', err);
         return { success: false, message: '❌ Ichki xatolik yuz berdi.' };
@@ -630,10 +621,10 @@ if (URL) {
     bot.launch()
         .then(() => console.log('✅ Bot polling rejimida ishga tushdi'))
         .catch(err => console.error('❌ Xatolik:', err));
-}
 
-// Graceful stop
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+    // Faqat polling rejimida graceful stop ni o'rnatamiz
+    process.once('SIGINT', () => bot.stop('SIGINT'));
+    process.once('SIGTERM', () => bot.stop('SIGTERM'));
+}
 
 console.log('🚀 Bot mukammal ishlashga tayyor!');
