@@ -1,5 +1,6 @@
 const { Telegraf, Markup, session } = require('telegraf');
 const mongoose = require('mongoose');
+const express = require('express');
 
 // SOZLAMALAR
 const BOT_TOKEN = '8595951105:AAEgCbk2ZqJRtrOJ1-gpZNTEwTphmx_wUws';
@@ -9,13 +10,23 @@ const MONGODB_URL = 'mongodb+srv://abumafia0:abumafia0@abumafia.h1trttg.mongodb.
 const ADMIN_IDS = [6606638731, 6355141067, 7962180552, 6671258886];
 
 // Render.com muhit o'zgaruvchilari
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000; // Render avtomatik 10000 portni ishlatadi
 const URL = process.env.RENDER_EXTERNAL_URL || process.env.URL;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'super_secret_token_123';
 
 // MongoDB ulanish
 mongoose.connect(MONGODB_URL)
-    .then(() => console.log('✅ MongoDB ulandi'))
+    .then(async () => {
+        console.log('✅ MongoDB ulandi');
+        
+        // Mavjud chat_id indeksini o'chirishga harakat qilamiz
+        try {
+            await mongoose.connection.db.collection('subscriptions').dropIndex('chat_id_1');
+            console.log('✅ chat_id indeksi o\'chirildi');
+        } catch (err) {
+            console.log('ℹ️ Indeks allaqachon o\'chirilgan yoki mavjud emas');
+        }
+    })
     .catch(err => console.error('❌ MongoDB xatosi:', err));
 
 // Schemalar
@@ -33,10 +44,9 @@ const movieSchema = new mongoose.Schema({
     date: { type: Date, default: Date.now }
 });
 
-// subscriptionSchema ni o'zgartirish: chat_id unique emas
+// subscriptionSchema - chat_id ni BUTUNLAY OLIB TASHLAYMIZ!
 const subscriptionSchema = new mongoose.Schema({
     chat_username: { type: String, required: true, unique: true },
-    chat_id: { type: String },  // unique emas, shuning uchun null qiymatlar takrorlanishi mumkin
     type: { type: String, enum: ['channel', 'group'], required: true },
     is_private: { type: Boolean, default: false },
     invite_link: String,
@@ -111,7 +121,7 @@ function parseChatLink(input) {
     return null;
 }
 
-// Obuna tekshirish
+// Obuna tekshirish - TO'LIQ ISHLASHI UCHUN QAYTA YOZILDI
 async function checkAllSubscriptions(userId) {
     if (isAdmin(userId)) return true;
 
@@ -124,17 +134,27 @@ async function checkAllSubscriptions(userId) {
             if (sub.is_private) continue;
             
             try {
-                const chatId = sub.chat_username.replace('@', '');
+                // @ belgisini olib tashlaymiz
+                const chatId = sub.chat_username.startsWith('@') 
+                    ? sub.chat_username.substring(1) 
+                    : sub.chat_username;
+                
+                // console.log(`Tekshirilayotgan kanal: ${chatId}, User: ${userId}`);
                 const member = await bot.telegram.getChatMember(chatId, userId);
                 const status = member.status;
                 
                 if (status === 'left' || status === 'kicked') {
+                    console.log(`❌ User ${userId} kanal ${chatId} da a'zo emas`);
                     return false;
                 }
+                // console.log(`✅ User ${userId} kanal ${chatId} da a'zo`);
             } catch (error) {
                 console.error(`❌ Obuna tekshirish xatosi (${sub.chat_username}):`, error.message);
-                // Agar kanal topilmasa, obunani o'chiramiz
-                await Subscription.deleteOne({ chat_username: sub.chat_username });
+                // Agar kanal topilmasa yoki bot admin bo'lmasa, obunani o'chiramiz
+                if (error.description && error.description.includes('chat not found')) {
+                    await Subscription.deleteOne({ chat_username: sub.chat_username });
+                    console.log(`🗑️ ${sub.chat_username} kanali o'chirildi`);
+                }
                 continue;
             }
         }
@@ -186,7 +206,7 @@ async function addUser(ctx) {
     }
 }
 
-// Kanal qo'shish (umumiy funksiya)
+// Kanal qo'shish (umumiy funksiya) - TO'LIQ TUZATILDI
 async function addSubscription(chatLink, type) {
     try {
         const parsed = parseChatLink(chatLink);
@@ -203,7 +223,7 @@ async function addSubscription(chatLink, type) {
             return { success: false, message: '❌ Bu kanal/guruh allaqachon qoʻshilgan.' };
         }
 
-        let subscriptionData = {
+        const subscriptionData = {
             chat_username: parsed.identifier,
             type: type,
             is_private: parsed.isPrivate,
@@ -211,21 +231,20 @@ async function addSubscription(chatLink, type) {
         };
 
         if (parsed.isPrivate) {
-            // Maxfiy kanal/guruh uchun chat_id ni inviteHash yordamida yaratamiz
-            subscriptionData.chat_id = `private_${parsed.inviteHash || parsed.identifier.replace('@', '')}`;
+            // Maxfiy kanal/guruh uchun
             subscriptionData.invite_link = chatLink.startsWith('http') ? chatLink : `https://t.me/${parsed.inviteHash}`;
         } else {
-            // Ochiq kanal/guruh uchun chat_id ni chat_username bilan bir xil qilamiz (yoki null qoldiramiz)
-            subscriptionData.chat_id = parsed.identifier;  // yoki null
-            // Bot adminligini tekshirish
+            // Ochiq kanal/guruh uchun bot adminligini tekshirish
             const chatId = parsed.identifier.replace('@', '');
             try {
+                // console.log(`Kanalni tekshirish: @${chatId}`);
                 const chat = await bot.telegram.getChat(`@${chatId}`);
                 
                 if (chat.type !== 'channel' && chat.type !== 'supergroup') {
                     return { success: false, message: '❌ Bu kanal yoki guruh emas.' };
                 }
                 
+                // Bot adminligini tekshirish
                 const admins = await bot.telegram.getChatAdministrators(`@${chatId}`);
                 const isBotAdmin = admins.some(admin => admin.user.id === bot.botInfo.id);
                 
@@ -233,21 +252,25 @@ async function addSubscription(chatLink, type) {
                     return { success: false, message: '❌ Bot kanalda admin emas. Botni kanalga admin qiling va qayta urinib ko\'ring.' };
                 }
             } catch (error) {
-                if (error.description === 'Bad Request: chat not found') {
+                console.error('Kanal tekshirish xatosi:', error.message);
+                if (error.description && error.description.includes('chat not found')) {
                     return { success: false, message: '❌ Kanal topilmadi. Username ni tekshiring yoki kanal ochiqligiga ishonch hosil qiling.' };
                 }
-                return { success: false, message: `❌ Xatolik: ${error.message}` };
+                return { success: false, message: `❌ Xatolik: ${error.description || error.message}` };
             }
         }
         
         await Subscription.create(subscriptionData);
         return { 
             success: true, 
-            message: `✅ ${type === 'channel' ? 'Kanal' : 'Guruh'} muvaffaqiyatli qoʻshildi!` 
+            message: `✅ ${type === 'channel' ? 'Kanal' : 'Guruh'} muvaffaqiyatli qoʻshildi!\nUsername: ${parsed.identifier}` 
         };
         
     } catch (err) {
         console.error('❌ Kanal qo\'shish xatosi:', err);
+        if (err.code === 11000) {
+            return { success: false, message: '❌ Bu kanal/guruh allaqachon qoʻshilgan.' };
+        }
         return { success: false, message: '❌ Ichki xatolik yuz berdi.' };
     }
 }
@@ -258,8 +281,8 @@ async function deleteSubscription(identifier) {
         const result = await Subscription.deleteOne({ 
             $or: [
                 { chat_username: identifier.toLowerCase() },
-                { invite_link: identifier },
-                { chat_username: `@${identifier}`.toLowerCase() }
+                { chat_username: `@${identifier}`.toLowerCase() },
+                { invite_link: identifier }
             ]
         });
         
@@ -270,8 +293,10 @@ async function deleteSubscription(identifier) {
     }
 }
 
-// Barcha handlerlar
+// ====================== HANDLERLAR ======================
+
 bot.start(async (ctx) => {
+    console.log(`Start bosildi: ${ctx.from.id} - ${ctx.from.username}`);
     await addUser(ctx);
     const userId = ctx.from.id;
     const isSubscribed = await checkAllSubscriptions(userId);
@@ -279,9 +304,15 @@ bot.start(async (ctx) => {
     if (!isSubscribed && !isAdmin(userId)) {
         const keyboard = await getSubscriptionKeyboard();
         return ctx.reply(
-            '🤖 Botdan foydalanish uchun quyidagi kanal va guruhlarga obuna boʻling:\n' +
-            '⚠️ Eslatma: Kanalga obuna bo\'lgach, "✅ Obunani tekshirish" tugmasini bosing.',
-            keyboard
+            '🤖 *Botdan foydalanish uchun quyidagi kanal va guruhlarga obuna boʻling:*\n\n' +
+            '1️⃣ Kanal/guruhga kirish uchun tugmani bosing\n' +
+            '2️⃣ Obuna bo\'ling\n' +
+            '3️⃣ *"✅ Obunani tekshirish"* tugmasini bosing\n\n' +
+            '⚠️ *Eslatma:* Faqat obuna bo\'lish yetarli emas, tekshirish tugmasini ham bosing!',
+            { 
+                parse_mode: 'Markdown',
+                ...keyboard 
+            }
         );
     }
 
@@ -292,18 +323,20 @@ bot.start(async (ctx) => {
             ['➕ Kanal qoʻshish', '➕ Guruh qoʻshish'],
             ['📋 Roʻyxatni koʻrish', '➖ Oʻchirish']
         ]).resize().oneTime();
-        return ctx.reply('👨‍💻 Admin panelga xush kelibsiz!', adminKeyboard);
+        return ctx.reply('👨‍💻 *Admin panelga xush kelibsiz!*', { parse_mode: 'Markdown', ...adminKeyboard });
     }
 
     ctx.reply(
-        '🎥 Botga xush kelibsiz!\n\n' +
+        '🎥 *Botga xush kelibsiz!*\n\n' +
         'Kino olish uchun kod yuboring (masalan: 123)\n' +
-        '⚠️ Diqqat: Bot 18+ kontent uchun mo\'ljallangan!'
+        '⚠️ *Diqqat:* Bot 18+ kontent uchun mo\'ljallangan!',
+        { parse_mode: 'Markdown' }
     );
 });
 
 bot.action('check_subscription', async (ctx) => {
     await ctx.answerCbQuery();
+    console.log(`Obuna tekshirildi: ${ctx.from.id}`);
     const userId = ctx.from.id;
     const isSubscribed = await checkAllSubscriptions(userId);
 
@@ -316,13 +349,13 @@ bot.action('check_subscription', async (ctx) => {
                 ['➕ Kanal qoʻshish', '➕ Guruh qoʻshish'],
                 ['📋 Roʻyxatni koʻrish', '➖ Oʻchirish']
             ]).resize().oneTime();
-            return ctx.reply('✅ Obuna tasdiqlandi! Admin panelga xush kelibsiz!', adminKeyboard);
+            return ctx.reply('✅ *Obuna tasdiqlandi! Admin panelga xush kelibsiz!*', { parse_mode: 'Markdown', ...adminKeyboard });
         }
-        return ctx.reply('✅ Obuna tasdiqlandi! Kino olish uchun kod yuboring.');
+        return ctx.reply('✅ *Obuna tasdiqlandi! Kino olish uchun kod yuboring.*', { parse_mode: 'Markdown' });
     }
 
     const keyboard = await getSubscriptionKeyboard();
-    ctx.reply('❌ Hali barcha kanal va guruhlarga obuna boʻlmagansiz:', keyboard);
+    ctx.reply('❌ *Hali barcha kanal va guruhlarga obuna boʻlmagansiz:*', { parse_mode: 'Markdown', ...keyboard });
 });
 
 // Admin buyruqlari
@@ -331,10 +364,11 @@ bot.hears('🎬 Kino qoʻshish', (ctx) => {
     ensureSession(ctx);
     ctx.session.addingMovie = true;
     ctx.reply(
-        '🎬 Kino qoʻshish rejimi yoqildi!\n\n' +
+        '🎬 *Kino qoʻshish rejimi yoqildi!*\n\n' +
         'Har qanday chatdan (shaxsiy, guruh, kanal) video yuboring yoki forward qiling!\n' +
         'Yuborgan videongizga izoh qo\'shishingiz mumkin (masalan: kino nomi, yili).\n' +
-        'Keyin sizdan kino kodi so\'raladi.'
+        'Keyin sizdan kino kodi so\'raladi.',
+        { parse_mode: 'Markdown' }
     );
 });
 
@@ -348,12 +382,13 @@ bot.hears('📊 Statistika', async (ctx) => {
         const privateSubs = await Subscription.countDocuments({ is_private: true });
         
         ctx.reply(
-            `📊 Bot statistikasi:\n\n` +
+            `📊 *Bot statistikasi:*\n\n` +
             `👥 Foydalanuvchilar: ${users}\n` +
             `🎬 Kinolar soni: ${movies}\n` +
             `📢 Majburiy obunalar: ${subs}\n` +
             `   ├ Ochiq kanal/guruh: ${publicSubs}\n` +
-            `   └ Maxfiy kanal/guruh: ${privateSubs}`
+            `   └ Maxfiy kanal/guruh: ${privateSubs}`,
+            { parse_mode: 'Markdown' }
         );
     } catch (err) {
         ctx.reply('❌ Statistika olishda xatolik');
@@ -365,9 +400,10 @@ bot.hears('📢 Broadcast', (ctx) => {
     ensureSession(ctx);
     ctx.session.broadcasting = true;
     ctx.reply(
-        '📢 Broadcast rejimi yoqildi!\n\n' +
+        '📢 *Broadcast rejimi yoqildi!*\n\n' +
         'Barcha foydalanuvchilarga yubormoqchi bo\'lgan xabaringizni yuboring:\n' +
-        'Matn, rasm, video, audio, dokument yoki boshqa kontent.'
+        'Matn, rasm, video, audio, dokument yoki boshqa kontent.',
+        { parse_mode: 'Markdown' }
     );
 });
 
@@ -376,11 +412,12 @@ bot.hears('➕ Kanal qoʻshish', (ctx) => {
     ensureSession(ctx);
     ctx.session.awaitingChannel = true;
     ctx.reply(
-        '📢 Kanal qoʻshish rejimi:\n\n' +
+        '📢 *Kanal qoʻshish rejimi:*\n\n' +
         'Kanal linkini yuboring:\n' +
         '1. Public kanal: @kanal_username yoki https://t.me/kanal_username\n' +
         '2. Private kanal: https://t.me/+invitehash yoki +invitehash\n\n' +
-        '⚠️ Eslatma: Public kanallarda bot admin bo\'lishi shart!'
+        '⚠️ *Eslatma:* Public kanallarda bot admin bo\'lishi shart!',
+        { parse_mode: 'Markdown' }
     );
 });
 
@@ -389,11 +426,12 @@ bot.hears('➕ Guruh qoʻshish', (ctx) => {
     ensureSession(ctx);
     ctx.session.awaitingGroup = true;
     ctx.reply(
-        '👥 Guruh qoʻshish rejimi:\n\n' +
+        '👥 *Guruh qoʻshish rejimi:*\n\n' +
         'Guruh linkini yuboring:\n' +
         '1. Public guruh: @guruh_username yoki https://t.me/guruh_username\n' +
         '2. Private guruh: https://t.me/+invitehash yoki +invitehash\n\n' +
-        '⚠️ Eslatma: Public guruhlarda bot admin bo\'lishi shart!'
+        '⚠️ *Eslatma:* Public guruhlarda bot admin bo\'lishi shart!',
+        { parse_mode: 'Markdown' }
     );
 });
 
@@ -406,7 +444,7 @@ bot.hears('📋 Roʻyxatni koʻrish', async (ctx) => {
         `${i+1}. ${s.type === 'channel' ? '📢' : '👥'} ${s.chat_username} ${s.is_private ? '🔒' : '🌐'}`
     ).join('\n');
     
-    ctx.reply(`📋 Majburiy obunalar (${subs.length} ta):\n\n${list}`);
+    ctx.reply(`📋 *Majburiy obunalar (${subs.length} ta):*\n\n${list}`, { parse_mode: 'Markdown' });
 });
 
 bot.hears('➖ Oʻchirish', (ctx) => {
@@ -414,9 +452,10 @@ bot.hears('➖ Oʻchirish', (ctx) => {
     ensureSession(ctx);
     ctx.session.deletingSub = true;
     ctx.reply(
-        '🗑️ Obunani o\'chirish rejimi:\n\n' +
+        '🗑️ *Obunani o\'chirish rejimi:*\n\n' +
         'O\'chirmoqchi bo\'lgan kanal/guruhning username yoki linkini yuboring.\n' +
-        'Namuna: @kanal_username yoki https://t.me/+invitehash'
+        'Namuna: @kanal_username yoki https://t.me/+invitehash',
+        { parse_mode: 'Markdown' }
     );
 });
 
@@ -431,7 +470,7 @@ bot.on('video', async (ctx) => {
         caption: ctx.message.caption || ''
     };
     ctx.session.waitingForCode = true;
-    ctx.reply('✅ Video qabul qilindi!\nEndi kino kodi yuboring (masalan: 123):');
+    ctx.reply('✅ *Video qabul qilindi!*\nEndi kino kodi yuboring (masalan: 123):', { parse_mode: 'Markdown' });
 });
 
 // TEXT XABARLARNI QAYTA ISHLASH
@@ -444,14 +483,14 @@ bot.on('text', async (ctx) => {
     if (isAdmin(userId) && ctx.session.awaitingChannel) {
         const result = await addSubscription(text, 'channel');
         delete ctx.session.awaitingChannel;
-        return ctx.reply(result.message);
+        return ctx.reply(result.message, { parse_mode: 'Markdown' });
     }
 
     // Guruh qo'shish
     if (isAdmin(userId) && ctx.session.awaitingGroup) {
         const result = await addSubscription(text, 'group');
         delete ctx.session.awaitingGroup;
-        return ctx.reply(result.message);
+        return ctx.reply(result.message, { parse_mode: 'Markdown' });
     }
 
     // Obunani o'chirish
@@ -459,9 +498,9 @@ bot.on('text', async (ctx) => {
         const deleted = await deleteSubscription(text);
         delete ctx.session.deletingSub;
         if (deleted) {
-            return ctx.reply(`✅ "${text}" obunasi o'chirildi.`);
+            return ctx.reply(`✅ *"${text}" obunasi o\'chirildi.*`, { parse_mode: 'Markdown' });
         } else {
-            return ctx.reply('❌ Bunday obuna topilmadi.');
+            return ctx.reply('❌ *Bunday obuna topilmadi.*', { parse_mode: 'Markdown' });
         }
     }
 
@@ -470,13 +509,13 @@ bot.on('text', async (ctx) => {
         const code = text;
         
         if (!/^\d+$/.test(code)) {
-            return ctx.reply('❌ Kod faqat raqamlardan iborat bo\'lishi kerak. Qayta kiriting:');
+            return ctx.reply('❌ *Kod faqat raqamlardan iborat bo\'lishi kerak. Qayta kiriting:*', { parse_mode: 'Markdown' });
         }
 
         try {
             const existing = await Movie.findOne({ code });
             if (existing) {
-                return ctx.reply(`⚠️ ${code} kodi allaqachon mavjud. Boshqa kod kiriting:`);
+                return ctx.reply(`⚠️ *${code} kodi allaqachon mavjud. Boshqa kod kiriting:*`, { parse_mode: 'Markdown' });
             }
 
             await Movie.create({
@@ -489,10 +528,10 @@ bot.on('text', async (ctx) => {
             ctx.session.waitingForCode = false;
             delete ctx.session.movieData;
 
-            return ctx.reply(`✅ ${code} kodli kino muvaffaqiyatli saqlandi!`);
+            return ctx.reply(`✅ *${code} kodli kino muvaffaqiyatli saqlandi!*`, { parse_mode: 'Markdown' });
         } catch (err) {
             console.error('❌ Kino saqlash xatosi:', err);
-            return ctx.reply('❌ Saqlashda xatolik yuz berdi. Qayta urinib ko\'ring.');
+            return ctx.reply('❌ *Saqlashda xatolik yuz berdi. Qayta urinib ko\'ring.*', { parse_mode: 'Markdown' });
         }
     }
 
@@ -519,13 +558,14 @@ bot.on('text', async (ctx) => {
             
             ctx.session.broadcasting = false;
             return ctx.reply(
-                `✅ Broadcast yakunlandi!\n` +
+                `✅ *Broadcast yakunlandi!*\n` +
                 `📤 Yuborildi: ${success} ta\n` +
-                `❌ Yuborilmadi: ${failed} ta`
+                `❌ Yuborilmadi: ${failed} ta`,
+                { parse_mode: 'Markdown' }
             );
         } catch (err) {
             ctx.session.broadcasting = false;
-            return ctx.reply('❌ Broadcastda xatolik yuz berdi.');
+            return ctx.reply('❌ *Broadcastda xatolik yuz berdi.*', { parse_mode: 'Markdown' });
         }
     }
 
@@ -533,7 +573,10 @@ bot.on('text', async (ctx) => {
     const isSubscribed = await checkAllSubscriptions(userId);
     if (!isSubscribed && !isAdmin(userId)) {
         const keyboard = await getSubscriptionKeyboard();
-        return ctx.reply('❌ Avval barcha kanal va guruhlarga obuna boʻling:', keyboard);
+        return ctx.reply('❌ *Avval barcha kanal va guruhlarga obuna boʻling:*', { 
+            parse_mode: 'Markdown',
+            ...keyboard 
+        });
     }
 
     // Kino kodini qidirish
@@ -542,7 +585,7 @@ bot.on('text', async (ctx) => {
         const movie = await Movie.findOne({ code: text });
         
         if (!movie) {
-            return ctx.reply('❌ Bunday kodda kino topilmadi.');
+            return ctx.reply('❌ *Bunday kodda kino topilmadi.*', { parse_mode: 'Markdown' });
         }
 
         try {
@@ -552,10 +595,10 @@ bot.on('text', async (ctx) => {
             });
         } catch (err) {
             console.error('❌ Video yuborish xatosi:', err);
-            ctx.reply('❌ Video yuborishda xatolik yuz berdi. Adminlarga murojaat qiling.');
+            ctx.reply('❌ *Video yuborishda xatolik yuz berdi. Adminlarga murojaat qiling.*', { parse_mode: 'Markdown' });
         }
     } else {
-        ctx.reply('⚠️ Iltimos, faqat raqamlardan iborat kino kodini yuboring.');
+        ctx.reply('⚠️ *Iltimos, faqat raqamlardan iborat kino kodini yuboring.*', { parse_mode: 'Markdown' });
     }
 });
 
@@ -582,41 +625,80 @@ bot.on(['photo', 'document', 'audio', 'voice', 'animation'], async (ctx) => {
         }
         
         ctx.session.broadcasting = false;
-        ctx.reply(`✅ Broadcast ${success} ta foydalanuvchiga yuborildi.`);
+        ctx.reply(`✅ *Broadcast ${success} ta foydalanuvchiga yuborildi.*`, { parse_mode: 'Markdown' });
     } catch (err) {
         ctx.session.broadcasting = false;
-        ctx.reply('❌ Broadcastda xatolik yuz berdi.');
+        ctx.reply('❌ *Broadcastda xatolik yuz berdi.*', { parse_mode: 'Markdown' });
     }
 });
 
-// === WEBHOOK SOZLASH ===
+// ====================== WEBHOOK SOZLASH ======================
+
 if (URL) {
+    console.log('🚀 Webhook rejimida ishga tushyapman...');
+    
     // Render.com uchun webhook
     const webhookPath = `/telegraf/${bot.secretPathComponent()}`;
     const fullUrl = `${URL}${webhookPath}`;
+    
+    console.log(`📡 Webhook manzili: ${fullUrl}`);
 
-    bot.telegram.setWebhook(fullUrl, {
-        secret_token: WEBHOOK_SECRET
-    }).then(() => {
-        console.log(`✅ Webhook o'rnatildi: ${fullUrl}`);
-    }).catch(err => {
-        console.error('❌ Webhook o\'rnatishda xato:', err.message);
-    });
-
-    // Express server
-    const express = require('express');
+    // Express server yaratish
     const app = express();
     app.use(express.json());
-    app.use(bot.webhookCallback(webhookPath));
 
+    // Asosiy sahifa
     app.get('/', (req, res) => {
         res.send('🎬 Kino17Bot ishlamoqda! 🚀');
     });
 
-    app.listen(PORT, () => {
-        console.log(`✅ Server ${PORT} portda ishga tushdi`);
+    // Webhook endpoint
+    app.post(webhookPath, (req, res) => {
+        // Secret token tekshirish
+        const token = req.headers['x-telegram-bot-api-secret-token'];
+        if (token !== WEBHOOK_SECRET) {
+            console.warn('⚠️ Noto\'g\'ri secret token');
+            return res.status(403).send('Forbidden');
+        }
+        
+        // Telegraf webhook middleware ni ishlatish
+        return bot.handleUpdate(req.body, res).then(() => {
+            res.status(200).end();
+        }).catch(err => {
+            console.error('❌ Webhook xatosi:', err);
+            res.status(500).end();
+        });
     });
+
+    // Serverni ishga tushirish
+    const server = app.listen(PORT, async () => {
+        console.log(`✅ Server ${PORT} portda ishga tushdi`);
+        
+        // Webhook o'rnatish
+        try {
+            await bot.telegram.setWebhook(fullUrl, {
+                secret_token: WEBHOOK_SECRET,
+                drop_pending_updates: true
+            });
+            console.log(`✅ Webhook muvaffaqiyatli o'rnatildi: ${fullUrl}`);
+            console.log('🤖 Bot to\'liq ishga tushdi va webhook rejimida ishlamoqda!');
+        } catch (err) {
+            console.error('❌ Webhook o\'rnatishda xato:', err.message);
+        }
+    });
+
+    // Graceful shutdown
+    process.on('SIGTERM', () => {
+        console.log('🛑 SIGTERM signal qabul qilindi, server yopilmoqda...');
+        server.close(() => {
+            console.log('✅ Server yopildi');
+            process.exit(0);
+        });
+    });
+
 } else {
+    console.log('🚀 Local polling rejimida ishga tushyapman...');
+    
     // Local test uchun polling
     bot.launch()
         .then(() => console.log('✅ Bot polling rejimida ishga tushdi'))
